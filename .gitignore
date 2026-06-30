@@ -1,0 +1,32 @@
+# Segredos e credenciais
+.env
+.msal_cache.*
+
+# Ambiente Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Banco de dados (mensagens privadas) e backups
+storage/*.db
+storage/*.db-wal
+storage/*.db-shm
+
+# Saídas geradas (conteúdo privado)
+briefings/
+*.log
+
+# Dumps de execução no terminal (contêm trechos de conversas)
+terminal_*.txt
+lista.txt
+
+# Editores e sistema operacional
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Documentos internos (não publicados)
+_private/
