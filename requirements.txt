@@ -1,0 +1,10 @@
+# Microsoft Graph — acesso HTTP direto + autenticação delegada (device code)
+requests>=2.31.0
+msal>=1.26.0
+
+# LLM — escolha o provider via .env (anthropic ou gemini)
+anthropic>=0.25.0
+google-generativeai>=0.5.0
+
+# Utilitários
+python-dotenv>=1.0.0

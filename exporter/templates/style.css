@@ -1,0 +1,198 @@
+/* Arquivo de conversas do Teams — visual inspirado no próprio Teams. */
+
+:root, html[data-theme="light"] {
+  --bg: #f0f2f5;
+  --card: #ffffff;
+  --ink: #242424;
+  --muted: #8a8a8a;
+  --line: #e3e3e3;
+  --accent: #5b5fc7;
+  --code-inline-bg: #eef0f4;
+  --code-inline-ink: #b3325a;
+}
+
+html[data-theme="dark"] {
+  --bg: #1b1b1f;
+  --card: #26262b;
+  --ink: #e8e8ea;
+  --muted: #9a9aa2;
+  --line: #3a3a42;
+  --accent: #9aa0f5;
+  --code-inline-bg: #3a3a42;
+  --code-inline-ink: #ff9bbf;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ---------- Topbar ---------- */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 20px;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+}
+.topbar h1 { font-size: 16px; margin: 0; font-weight: 600; }
+.topbar .back { font-size: 13px; white-space: nowrap; }
+.theme-btn {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 15px;
+  cursor: pointer;
+  line-height: 1;
+}
+.theme-btn:hover { border-color: var(--accent); }
+
+/* ---------- Índice ---------- */
+.index-wrap { max-width: 900px; margin: 0 auto; padding: 16px; }
+.search {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+.chat-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 8px;
+  color: var(--ink);
+}
+.chat-row:hover { border-color: var(--accent); text-decoration: none; }
+.chat-row .name { flex: 1; font-weight: 600; }
+.chat-row .count { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.chat-row .range { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+/* ---------- Conversa ---------- */
+.conversation { max-width: 820px; margin: 0 auto; padding: 16px; }
+
+/* Divisória fina por dia, com data pequena à esquerda. */
+.day-sep { display: flex; align-items: center; gap: 10px; margin: 22px 0 12px; }
+.day-sep .day-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  white-space: nowrap;
+}
+.day-sep::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+.msg {
+  background: var(--card);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 6px 0;
+  max-width: 82%;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, .05);
+}
+.msg .meta { font-size: 12px; margin-bottom: 2px; }
+.msg .author { font-weight: 600; }
+.msg .time { color: var(--muted); font-size: 11px; margin-left: 8px; }
+.msg .content { word-wrap: break-word; }
+.msg .content p { margin: 4px 0; }
+.msg .content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  margin-top: 6px;
+  cursor: zoom-in;
+  display: block;
+}
+
+/* ---------- Código (snippets do Teams) ---------- */
+.msg .content pre {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: 12px 14px;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-family: "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  margin: 8px 0;
+  white-space: pre;
+  tab-size: 4;
+}
+.msg .content pre code {
+  background: none;
+  color: inherit;
+  padding: 0;
+  font-size: inherit;
+}
+.msg .content code {
+  background: var(--code-inline-bg);
+  color: var(--code-inline-ink);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12.5px;
+}
+
+/* Bloco de código com botão "copiar" (injetado via JS). */
+.code-wrap { position: relative; }
+.code-wrap .copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 11px;
+  padding: 2px 8px;
+  background: rgba(255, 255, 255, .12);
+  color: #ddd;
+  border: 1px solid rgba(255, 255, 255, .25);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .15s;
+}
+.code-wrap:hover .copy-btn { opacity: 1; }
+.code-wrap .copy-btn:hover { background: rgba(255, 255, 255, .2); }
+
+/* Cores de autor (estilo Teams) */
+.a0 .author { color: #5b5fc7; }
+.a1 .author { color: #c4314b; }
+.a2 .author { color: #1a7f37; }
+.a3 .author { color: #b35900; }
+.a4 .author { color: #8338ec; }
+.a5 .author { color: #0f6cbd; }
+.a6 .author { color: #ad5f00; }
+.a7 .author { color: #c83a8a; }
+
+/* ---------- Lightbox ---------- */
+.lightbox {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .8);
+  z-index: 50;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+}
+.lightbox.open { display: flex; }
+.lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 6px; }
