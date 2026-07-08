@@ -218,7 +218,11 @@ def run_pipeline(
     no_classify: bool = False,
     force: bool = False,
     reprocess: bool = False,
-) -> None:
+) -> bool:
+    """Executa o pipeline. Retorna False se a extração falhou por completo
+    (rede/Graph) — o chamador usa isso para sair com código != 0 e permitir que
+    o Agendador reexecute. Os briefings do que já está no banco são gerados de
+    qualquer forma."""
     logger.info("=" * 60)
     logger.info("Iniciando pipeline — %s", datetime.now().isoformat())
     logger.info("=" * 60)
@@ -226,6 +230,7 @@ def run_pipeline(
     create_tables()
 
     touched: set[str] = set()
+    extraction_failed = False
     if reprocess:
         # Reclassificar um período já processado com a engine atual: limpa os
         # itens antigos e remarca as mensagens como pendentes. Não re-extrai.
@@ -243,6 +248,7 @@ def run_pipeline(
             extracted, touched = run_extraction(since_floor=since, until=until, force=force)
             logger.info("Total extraido: %d mensagens em %d chats", extracted, len(touched))
         except Exception as e:
+            extraction_failed = True
             logger.error("Falha na extracao: %s", e)
 
     # Classificar/gerar briefings por dia (a menos que --no-classify).
@@ -269,7 +275,11 @@ def run_pipeline(
         except Exception as e:
             logger.error("Falha no export HTML: %s", e)
 
-    logger.info("Pipeline concluido.")
+    if extraction_failed:
+        logger.error("Pipeline concluido COM FALHA na extracao — saindo com codigo 1.")
+    else:
+        logger.info("Pipeline concluido.")
+    return not extraction_failed
 
 
 def _maybe_build_weekly(today: date) -> None:
@@ -350,10 +360,14 @@ def main():
         until = date.fromisoformat(args.until)
         logger.info("Limite final do backfill: %s", until.isoformat())
 
-    run_pipeline(
+    ok = run_pipeline(
         since=since, until=until, no_export=args.no_export,
         no_classify=args.no_classify, force=args.force, reprocess=args.reprocess,
     )
+    # Exit code != 0 sinaliza a falha ao Agendador de Tarefas (que pode ser
+    # configurado para reiniciar em caso de falha), em vez de mascará-la.
+    if not ok:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

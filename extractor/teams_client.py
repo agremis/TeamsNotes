@@ -5,11 +5,49 @@ import time
 from datetime import datetime
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 import config
 from auth.token_manager import get_access_token
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+
+
+def _build_session() -> requests.Session:
+    """Session compartilhada com retry/backoff para sobreviver a quedas
+    transitórias de rede.
+
+    Sem isto, uma única falha de conexão (rede subindo no boot, soluço no meio
+    da paginação) aborta a extração inteira. Retenta erros de conexão/leitura e
+    429/5xx com backoff exponencial e respeita Retry-After. GET é idempotente, o
+    replay é seguro.
+    """
+    retry = Retry(
+        total=config.HTTP_MAX_RETRIES,
+        backoff_factor=config.HTTP_BACKOFF_FACTOR,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset(["GET"]),
+        respect_retry_after_header=True,
+        raise_on_status=False,  # deixa o resp.raise_for_status() decidir no fim
+    )
+    session = requests.Session()
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+    return session
+
+
+# Uma sessão por processo: o pool de conexões e a política de retry são
+# thread-safe, então os workers paralelos da extração a compartilham.
+_SESSION = _build_session()
+
+
+def get_session() -> requests.Session:
+    """Sessão HTTP compartilhada (retry/backoff) para chamadas à Graph.
+
+    Exposta para outros módulos (ex.: download de imagens no exporter) reusarem
+    a mesma resiliência a quedas transitórias, em vez de um requests.get() cru.
+    """
+    return _SESSION
 
 # Tipos de mensagem que NÃO são conversa real (eventos de sistema do Teams).
 SYSTEM_MESSAGE_TYPES = {"systemEventMessage", "chatEvent", "unknownFutureValue"}
@@ -41,7 +79,7 @@ def _get_paginated(url: str, params: dict | None = None) -> list[dict]:
     headers = _headers()
 
     while url:
-        resp = requests.get(url, headers=headers, params=params, timeout=config.REQUEST_TIMEOUT)
+        resp = _SESSION.get(url, headers=headers, params=params, timeout=config.REQUEST_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
         results.extend(data.get("value", []))
@@ -191,7 +229,7 @@ def get_messages(
     reached_floor = False
 
     while url and not reached_floor:
-        resp = requests.get(url, headers=headers, params=params, timeout=config.REQUEST_TIMEOUT)
+        resp = _SESSION.get(url, headers=headers, params=params, timeout=config.REQUEST_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
 
