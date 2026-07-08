@@ -13,10 +13,9 @@ import re
 import shutil
 from html import unescape
 
-import requests
-
 import config
 from auth.token_manager import get_access_token
+from extractor.teams_client import get_session
 from storage.database import get_connection
 
 logger = logging.getLogger(__name__)
@@ -95,7 +94,7 @@ def _download_image(url: str, dest_dir: str, basename: str) -> str | None:
             return f"{basename}.{ext}"
     try:
         token = get_access_token()
-        resp = requests.get(
+        resp = get_session().get(
             url, headers={"Authorization": f"Bearer {token}"}, timeout=config.REQUEST_TIMEOUT
         )
         resp.raise_for_status()

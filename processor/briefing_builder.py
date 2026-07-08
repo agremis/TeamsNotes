@@ -12,12 +12,12 @@ from datetime import date, timedelta
 import config
 
 CATEGORY_LABELS = {
-    "alinhamento": "Alinhamentos & Decisoes",
+    "alinhamento": "Alinhamentos & Decisões",
     "lembrete": "Lembretes & Prazos",
-    "snippet_codigo": "Snippets de Codigo",
+    "snippet_codigo": "Snippets de Código",
     "link_util": "Links Relevantes",
     "alerta": "Alertas & Problemas",
-    "definicao": "Definicoes Tecnicas",
+    "definicao": "Definições Técnicas",
 }
 
 # Ordem de exibição dentro de cada seção de chat

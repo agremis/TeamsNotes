@@ -75,6 +75,15 @@ API_DELAY = 0.5
 # conexão pendurada.
 REQUEST_TIMEOUT = 30
 
+# Resiliência de rede na extração (Graph). A task roda no boot pelo Agendador e
+# pode pegar a rede ainda subindo, ou um soluço no meio da paginação — retenta
+# com backoff em vez de abortar o run inteiro por uma falha transitória (inclui
+# o WinError 10051 "rede inacessível", que o urllib3 trata como erro de conexão).
+# Backoff dorme ~{factor * 2**(n-1)}s: com 0.5 → 0, 1, 2, 4, 8, 16s (~31s de
+# janela para a rede voltar antes de desistir).
+HTTP_MAX_RETRIES = int(os.getenv("HTTP_MAX_RETRIES", "6"))
+HTTP_BACKOFF_FACTOR = float(os.getenv("HTTP_BACKOFF_FACTOR", "0.5"))
+
 # Falhas de extração que disparam aborto (provável queda de rede).
 MAX_CONSECUTIVE_ERRORS = 15
 
