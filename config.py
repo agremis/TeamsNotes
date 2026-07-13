@@ -94,6 +94,13 @@ EXTRACTION_WORKERS = 5
 # LLM: tamanho máximo de lote de mensagens por chamada
 LLM_BATCH_SIZE = 50
 
+# Backlog órfão: datas passadas com mensagens nunca classificadas (o run diário só
+# olha para 'ontem', então tudo que o backfill trouxe para datas antigas ficou
+# pendente). Quantas dessas datas drenar por execução, da mais recente para a mais
+# antiga. 0 = desligado — drenar CUSTA COTA DE LLM, então é opt-in de propósito.
+# Também disponível sob demanda via `run_nightly.py --backlog N`.
+BACKLOG_DAYS_PER_RUN = int(os.getenv("BACKLOG_DAYS_PER_RUN", "0"))
+
 # Resiliência a rate limit (429) do LLM.
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "5"))   # tentativas extras ao 429
 LLM_RETRY_DELAY = int(os.getenv("LLM_RETRY_DELAY", "30"))  # espera padrão (s) sem retry-after
