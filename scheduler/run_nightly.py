@@ -26,7 +26,9 @@ from storage.database import (
     update_cursor, get_cursor, save_classified_items,
     get_items_for_date, get_items_for_date_range,
     mark_messages_processed, reset_processed, delete_items_for_range,
+    get_pending_dates,
 )
+from auth.token_manager import AuthRequired
 from extractor.teams_client import get_messages, list_chats, parse_timestamp, to_utc
 from processor.classifier import classify
 from processor.briefing_builder import build_daily, build_weekly, build_monthly
@@ -232,6 +234,7 @@ def run_pipeline(
     no_classify: bool = False,
     force: bool = False,
     reprocess: bool = False,
+    backlog: int | None = None,
 ) -> bool:
     """Executa o pipeline. Retorna False se a extração falhou por completo
     (rede/Graph) — o chamador usa isso para sair com código != 0 e permitir que
@@ -261,6 +264,9 @@ def run_pipeline(
         try:
             extracted, touched = run_extraction(since_floor=since, until=until, force=force)
             logger.info("Total extraido: %d mensagens em %d chats", extracted, len(touched))
+        except AuthRequired as e:
+            extraction_failed = True
+            logger.error("AUTENTICACAO EXPIRADA — nada foi extraido. %s", e)
         except Exception as e:
             extraction_failed = True
             logger.error("Falha na extracao: %s", e)
@@ -270,13 +276,17 @@ def run_pipeline(
         yesterday = date.today() - timedelta(days=1)
         start = since or yesterday
         end = min(until, yesterday) if until else yesterday
+        feitas: set[str] = set()
         current = start
         while current <= end:
             try:
                 process_day(current)
             except Exception as e:
                 logger.error("Falha ao processar %s: %s", current.isoformat(), e)
+            feitas.add(current.isoformat())
             current += timedelta(days=1)
+
+        _process_backlog(backlog if backlog is not None else config.BACKLOG_DAYS_PER_RUN, feitas)
 
         today = date.today()
         _maybe_build_weekly(today)
@@ -294,6 +304,40 @@ def run_pipeline(
     else:
         logger.info("Pipeline concluido.")
     return not extraction_failed
+
+
+def _process_backlog(limit: int, ja_feitas: set[str]) -> None:
+    """Drena datas órfãs: passadas, com mensagens que nunca foram classificadas.
+
+    process_day só cobre o intervalo do run (por padrão, ontem), então tudo que o
+    backfill trouxe para datas antigas ficava pendente para sempre. Drena da data
+    mais recente para a mais antiga — as lacunas recentes valem mais.
+
+    Limitado por execução porque classificar CUSTA COTA DE LLM: são ~159 mil
+    mensagens em ~1.300 datas. limit=0 desliga (padrão).
+    """
+    if limit <= 0:
+        return
+
+    pendentes = [d for d in get_pending_dates(newest_first=True) if d not in ja_feitas]
+    if not pendentes:
+        logger.info("Backlog vazio — nada orfao a classificar.")
+        return
+
+    alvo = pendentes[:limit]
+    logger.info(
+        "Backlog: %d datas orfas pendentes. Processando %d nesta execucao (%s).",
+        len(pendentes), len(alvo), ", ".join(alvo),
+    )
+    for d in alvo:
+        try:
+            process_day(date.fromisoformat(d))
+        except Exception as e:
+            logger.error("Falha ao processar backlog %s: %s", d, e)
+
+    restantes = len(pendentes) - len(alvo)
+    if restantes:
+        logger.info("Backlog: %d datas ainda pendentes.", restantes)
 
 
 def _maybe_build_weekly(today: date) -> None:
@@ -353,6 +397,14 @@ def main():
              "(recupera raw_html/imagens de datas já extraídas).",
     )
     parser.add_argument(
+        "--backlog",
+        type=int,
+        metavar="N",
+        help="Classifica N datas orfas (passadas, com mensagens nunca processadas), "
+             "da mais recente para a mais antiga. GASTA COTA DE LLM. "
+             "Padrao: config.BACKLOG_DAYS_PER_RUN (0 = desligado).",
+    )
+    parser.add_argument(
         "--reprocess",
         action="store_true",
         help="Reclassifica um período JÁ processado com a engine atual: limpa os "
@@ -377,6 +429,7 @@ def main():
     ok = run_pipeline(
         since=since, until=until, no_export=args.no_export,
         no_classify=args.no_classify, force=args.force, reprocess=args.reprocess,
+        backlog=args.backlog,
     )
     # Exit code != 0 sinaliza a falha ao Agendador de Tarefas (que pode ser
     # configurado para reiniciar em caso de falha), em vez de mascará-la.

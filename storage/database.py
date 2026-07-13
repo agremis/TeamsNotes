@@ -122,6 +122,26 @@ def get_unprocessed(target_date: str | None = None) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def get_pending_dates(limit: int | None = None, newest_first: bool = True) -> list[str]:
+    """Datas (YYYY-MM-DD) que ainda têm mensagens não classificadas.
+
+    O pipeline diário só olha para 'ontem', então mensagens extraídas depois (por
+    backfill) para uma data já passada ficam pendentes para sempre. Isto expõe
+    essas datas órfãs para que possam ser drenadas aos poucos.
+    """
+    order = "DESC" if newest_first else "ASC"
+    sql = (
+        "SELECT DATE(created_at) AS d FROM messages WHERE processed = 0 "
+        f"GROUP BY d ORDER BY d {order}"
+    )
+    params: tuple = ()
+    if limit is not None:
+        sql += " LIMIT ?"
+        params = (int(limit),)
+    with get_connection() as conn:
+        return [r["d"] for r in conn.execute(sql, params) if r["d"]]
+
+
 def mark_messages_processed(message_ids: list[str]) -> None:
     if not message_ids:
         return

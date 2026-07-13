@@ -87,10 +87,20 @@ necessário client secret.
 
 ## Uso
 
-### 1. Primeira execução (autenticação)
+### 1. Autenticação
 
-Na primeira vez, o programa exibe um **código** e uma URL. Acesse a URL, informe o
-código e autorize. O token fica em cache (`.msal_cache.json`) e é renovado sozinho.
+```bash
+python -m auth.login
+```
+
+Exibe um **código** e uma URL. Acesse a URL, informe o código e autorize. O token
+fica em cache (`.msal_cache.json`) e daí em diante é renovado sozinho.
+
+O pipeline **nunca** abre esse fluxo por conta própria: ele roda pelo Agendador,
+sem ninguém para digitar o código. Quando o cache não conseguir mais renovar
+(expirado ou revogado), o run falha na hora, com código de saída ≠ 0, pedindo que
+você rode o comando acima — em vez de travar ~15 min esperando um código que
+ninguém vai digitar.
 
 ### 2. Execução diária (processa o dia anterior)
 
@@ -116,6 +126,25 @@ python scheduler/run_nightly.py --since 2025-12-01 --until 2026-06-27
 | `--no-classify` | só extrai e gera o HTML — **não chama a LLM** (não consome cota) |
 | `--no-export` | não regenera o HTML ao final |
 | `--reprocess` | reclassifica um período **já processado** com a engine atual: limpa os briefings/itens do intervalo e remarca as mensagens (não re-extrai). Exige `--since` |
+| `--backlog N` | classifica **N datas órfãs** (passadas, com mensagens que nunca foram classificadas), da mais recente para a mais antiga. **Gasta cota de LLM** |
+
+### Backlog órfão
+
+O run diário só classifica *ontem*. Então mensagens que o backfill trouxe para
+datas passadas ficam pendentes para sempre — hoje são ~159 mil mensagens em ~1.300
+datas. Para drenar aos poucos, sem estourar a cota:
+
+```bash
+python scheduler/run_nightly.py --backlog 3     # 3 datas órfãs mais recentes
+```
+
+Para drenar automaticamente a cada execução, defina no `.env`:
+
+```ini
+BACKLOG_DAYS_PER_RUN=2
+```
+
+Padrão é `0` (desligado) — de propósito, para não consumir cota sem você pedir.
 
 > Exemplo — preencher o arquivo HTML de um período passado **sem gastar cota de LLM**:
 > ```bash

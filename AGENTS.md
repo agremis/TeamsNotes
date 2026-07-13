@@ -15,6 +15,24 @@
   não tem as dependências (`dotenv`, `msal`, `requests`) e falha no import.
 - Segredos ficam no `.env` (Azure, chaves de LLM) — nunca commitados.
 
+## Autenticação
+
+O pipeline roda desatendido (Agendador), então **nada no caminho dele pode abrir
+um fluxo interativo**. `get_access_token()` só renova pelo cache MSAL; se não
+conseguir, levanta `AuthRequired` na hora. O device flow vive isolado em
+`login()` / `python -m auth.login`, para um humano rodar.
+
+Não "conserte" um `AuthRequired` chamando `login()` de dentro do pipeline — foi
+exatamente isso que fazia o run travar ~15 min no polling e morrer com
+`AADSTS70016`.
+
+## Custo de LLM
+
+Classificar gasta cota (o free tier do Gemini é limitado). Qualquer caminho novo
+que chame a LLM em lote deve ser **opt-in e limitado** — ver `--backlog N` /
+`BACKLOG_DAYS_PER_RUN`, que por padrão é `0`. Não ligue drenos de backlog por
+padrão.
+
 ## Timestamps da Graph — cuidado
 
 Os `createdDateTime`/`lastActivity` da Microsoft Graph vêm com **precisão

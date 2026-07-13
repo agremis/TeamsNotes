@@ -53,8 +53,21 @@ def _store_token(result: dict) -> str:
     return result["access_token"]
 
 
+class AuthRequired(RuntimeError):
+    """Não há token válido no cache e ninguém pode digitar o código.
+
+    O pipeline roda pelo Agendador, sem ninguém na frente do console: abrir um
+    device flow ali só faria o run travar ~15 min no polling e morrer depois
+    (AADSTS70016 'authorization pending'). Melhor falhar rápido e dizer o que fazer.
+    """
+
+
 def get_access_token() -> str:
-    """Obtém um access token válido, usando cache ou device code flow."""
+    """Obtém um access token válido a partir do cache MSAL (nunca interativo).
+
+    Se o cache não puder renovar sozinho, levanta AuthRequired — cabe ao humano
+    rodar `python -m auth.login`. Ver login().
+    """
     # Cache em memória: reusa o token enquanto válido, sem reconstruir o MSAL.
     if _TOKEN["value"] and time.time() < _TOKEN["expires_at"]:
         return _TOKEN["value"]
@@ -63,10 +76,11 @@ def get_access_token() -> str:
         # Re-checa após o lock: outro worker pode ter renovado enquanto esperávamos.
         if _TOKEN["value"] and time.time() < _TOKEN["expires_at"]:
             return _TOKEN["value"]
-        return _acquire_token()
+        return _acquire_silent()
 
 
-def _acquire_token() -> str:
+def _acquire_silent() -> str:
+    """Renova pelo refresh token do cache. Levanta AuthRequired se não der."""
     cache = _load_cache()
     app = _build_app(cache)
 
@@ -81,7 +95,22 @@ def _acquire_token() -> str:
             _save_cache(cache)
             return _store_token(result)
 
-    # Device code flow — requer interação na primeira vez
+    raise AuthRequired(
+        "Sem token válido no cache MSAL (expirado, revogado ou primeira execução). "
+        "O pipeline não abre device flow sozinho — rode, no console: "
+        "python -m auth.login"
+    )
+
+
+def login() -> str:
+    """Device code flow INTERATIVO. Requer alguém para digitar o código.
+
+    Ponto de entrada explícito (`python -m auth.login`), separado do caminho do
+    pipeline justamente para que um run desatendido nunca caia aqui.
+    """
+    cache = _load_cache()
+    app = _build_app(cache)
+
     logger.info("Iniciando device code flow...")
     flow = app.initiate_device_flow(scopes=config.GRAPH_SCOPES)
     if "user_code" not in flow:
