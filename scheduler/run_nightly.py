@@ -319,7 +319,15 @@ def _process_backlog(limit: int, ja_feitas: set[str]) -> None:
     if limit <= 0:
         return
 
-    pendentes = [d for d in get_pending_dates(newest_first=True) if d not in ja_feitas]
+    # Só datas que o fluxo diário nunca mais vai visitar: as já cobertas por este
+    # run (ja_feitas) e HOJE ficam de fora — hoje ainda está acumulando mensagens
+    # e será classificado amanhã, como 'ontem'. Sem este corte, o dreno gastaria
+    # cota reclassificando um dia pela metade.
+    hoje = date.today().isoformat()
+    pendentes = [
+        d for d in get_pending_dates(newest_first=True)
+        if d < hoje and d not in ja_feitas
+    ]
     if not pendentes:
         logger.info("Backlog vazio — nada orfao a classificar.")
         return
