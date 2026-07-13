@@ -113,10 +113,28 @@ def _get_paginated(url: str, params: dict | None = None) -> list[dict]:
     return results
 
 
-def list_chats() -> list[dict]:
-    """Lista todos os chats do usuário autenticado.
+# Piso para chats sem timestamp — afundam para o fim da ordenação.
+_NO_ACTIVITY = datetime.min.replace(tzinfo=timezone.utc)
 
-    Retorna lista com id, chatType e topic de cada chat.
+
+def _chat_sort_key(chat: dict) -> tuple[datetime, datetime]:
+    """Ordena pela última mensagem real; desempata pela atividade bruta.
+
+    Chats sem mensagem real (só eventos de sistema, ou sem preview) afundam para
+    o fim — sem fallback no lastUpdated, que sobe metadados em lote. Compara
+    datetime, não string: ver parse_timestamp.
+    """
+    return (
+        parse_timestamp(chat.get("lastMessage")) or _NO_ACTIVITY,
+        parse_timestamp(chat.get("lastActivity")) or _NO_ACTIVITY,
+    )
+
+
+def list_chats() -> list[dict]:
+    """Lista todos os chats do usuário autenticado, sem duplicatas.
+
+    Retorna lista com id, chatType e topic de cada chat, ordenada pela última
+    mensagem real (mais recente primeiro).
     """
     raw = _get_paginated(
         f"{GRAPH_BASE}/me/chats",
@@ -158,14 +176,17 @@ def list_chats() -> list[dict]:
             "lastActivity": last_activity,
         })
 
-    # Ordena pela última mensagem real; desempata pela atividade bruta. Chats
-    # sem mensagem real (só eventos de sistema, ou sem preview) afundam para o
-    # fim — sem fallback no lastUpdated, que sobe metadados em lote.
-    chats.sort(
-        key=lambda c: (c.get("lastMessage") or "", c.get("lastActivity") or ""),
-        reverse=True,
-    )
-    return chats
+    # A paginação da Graph repete chats entre páginas (o $skiptoken não é estável
+    # se a coleção muda durante a varredura). Sem deduplicar, o mesmo chat entra
+    # várias vezes no pool e é extraído em paralelo consigo mesmo — chamadas
+    # desperdiçadas e contagem inflada. Mantém a entrada de atividade mais recente.
+    unique: dict[str, dict] = {}
+    for c in chats:
+        seen = unique.get(c["id"])
+        if seen is None or _chat_sort_key(c) > _chat_sort_key(seen):
+            unique[c["id"]] = c
+
+    return sorted(unique.values(), key=_chat_sort_key, reverse=True)
 
 
 def _parse_message(msg: dict) -> dict | None:
