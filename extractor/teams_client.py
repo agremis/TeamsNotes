@@ -2,7 +2,7 @@
 
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -51,6 +51,28 @@ def get_session() -> requests.Session:
 
 # Tipos de mensagem que NÃO são conversa real (eventos de sistema do Teams).
 SYSTEM_MESSAGE_TYPES = {"systemEventMessage", "chatEvent", "unknownFutureValue"}
+
+
+def to_utc(dt: datetime | None) -> datetime | None:
+    """Normaliza para UTC-aware. O cursor vem aware; o piso de --since, naive."""
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
+
+def parse_timestamp(value: str | None) -> datetime | None:
+    """createdDateTime/lastActivity da Graph -> datetime UTC-aware.
+
+    A precisão fracionária varia entre mensagens ('.11Z', '.061Z', '.7Z'), então
+    comparar as strings ISO diretamente é furado: '...25.11Z' > '...25.110000+00:00'
+    na ordem lexicográfica. Toda comparação de instante passa por aqui.
+    """
+    if not value:
+        return None
+    try:
+        return to_utc(datetime.fromisoformat(value))
+    except ValueError:
+        return None
 
 
 def _is_system_preview(preview: dict) -> bool:
@@ -183,20 +205,27 @@ def _parse_message(msg: dict) -> dict | None:
 
 def _collect_page(
     values: list[dict],
-    since_iso: str | None,
-    until_iso: str | None,
+    since: datetime | None,
+    until: datetime | None,
     out: list[dict],
+    since_exclusive: bool = False,
 ) -> bool:
     """Filtra uma página de mensagens para 'out'. Retorna True se cruzou o piso.
 
     Mensagens vêm em ordem decrescente: ao encontrar uma anterior a 'since', o
     restante é ainda mais antigo e a paginação pode parar.
+
+    since_exclusive=True quando 'since' é o cursor: a mensagem exatamente nesse
+    instante já foi extraída, então ela também é piso e para a paginação. Sem
+    isso, a última mensagem de cada chat era rebaixada em toda execução.
+    Com o piso de --since (uma data) o limite é inclusivo — daí o parâmetro.
     """
     for msg in values:
-        created = msg.get("createdDateTime", "")
-        if since_iso and created and created < since_iso:
-            return True
-        if until_iso and created and created > until_iso:
+        created = parse_timestamp(msg.get("createdDateTime"))
+        if since and created:
+            if created < since or (since_exclusive and created == since):
+                return True
+        if until and created and created > until:
             continue
         parsed = _parse_message(msg)
         if parsed:
@@ -208,12 +237,16 @@ def get_messages(
     chat_id: str,
     since: datetime | None = None,
     until: datetime | None = None,
+    since_exclusive: bool = False,
 ) -> list[dict]:
     """Busca mensagens de um chat no intervalo [since, until].
 
     O endpoint /chats/{id}/messages NÃO suporta $filter nem $orderby (retorna
     HTTP 400). As mensagens vêm em ordem decrescente de criação, então filtramos
     client-side e interrompemos a paginação assim que passamos do piso 'since'.
+
+    since_exclusive=True trata 'since' como já extraído (é o cursor), excluindo a
+    mensagem exatamente nesse instante. Ver _collect_page.
 
     Retorna lista com id, author, body, created_at (mensagens de sistema e sem
     conteúdo são descartadas).
@@ -222,8 +255,10 @@ def get_messages(
     params = {"$top": "50"}
     headers = _headers()
 
-    since_iso = since.strftime("%Y-%m-%dT%H:%M:%S.000Z") if since else None
-    until_iso = until.strftime("%Y-%m-%dT%H:%M:%S.999Z") if until else None
+    # Comparação por datetime, não por string: os createdDateTime da Graph têm
+    # precisão fracionária variável (ver parse_timestamp).
+    since = to_utc(since)
+    until = to_utc(until)
 
     messages = []
     reached_floor = False
@@ -233,7 +268,9 @@ def get_messages(
         resp.raise_for_status()
         data = resp.json()
 
-        reached_floor = _collect_page(data.get("value", []), since_iso, until_iso, messages)
+        reached_floor = _collect_page(
+            data.get("value", []), since, until, messages, since_exclusive
+        )
 
         url = data.get("@odata.nextLink")
         params = None

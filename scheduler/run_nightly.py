@@ -27,7 +27,7 @@ from storage.database import (
     get_items_for_date, get_items_for_date_range,
     mark_messages_processed, reset_processed, delete_items_for_range,
 )
-from extractor.teams_client import get_messages, list_chats
+from extractor.teams_client import get_messages, list_chats, parse_timestamp, to_utc
 from processor.classifier import classify
 from processor.briefing_builder import build_daily, build_weekly, build_monthly
 from exporter.html_exporter import export as export_html
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 def _extract_chat(
     chat: dict,
-    floor_iso: str | None,
+    floor_dt: datetime | None,
     until_dt: datetime | None,
     force: bool = False,
 ) -> int | None:
@@ -55,45 +55,59 @@ def _extract_chat(
     force=True ignora o cursor e re-extrai a janela [floor, until] inteira (para
     recuperar raw_html/imagens de datas já extraídas antes). O cursor nunca
     regride: avança só se o novo valor for maior que o existente.
+
+    Todas as comparações de instante são feitas em datetime (parse_timestamp), não
+    em string: os timestamps da Graph têm precisão fracionária variável e a ordem
+    lexicográfica não bate com a cronológica.
     """
     chat_id = chat["id"]
     chat_name = chat["topic"]
     # lastActivity (qualquer tipo de msg) é o limite superior seguro: se nem ele
     # passou do cursor, não há mensagem real nova para buscar.
-    last_activity = chat.get("lastActivity") or ""
+    last_activity = parse_timestamp(chat.get("lastActivity"))
 
-    cursor = get_cursor(chat_id)
+    cursor = to_utc(get_cursor(chat_id))
+    # O cursor é EXCLUSIVO: a mensagem exatamente nele já foi extraída. O piso de
+    # --since é inclusivo. Sem distinguir, a última mensagem de cada chat voltava
+    # da API e era re-salva em toda execução.
+    since_exclusive = False
     if force:
-        since = datetime.fromisoformat(floor_iso) if floor_iso else None
+        since = floor_dt
     else:
         since = cursor
-        if floor_iso and (since is None or since.isoformat() < floor_iso):
-            since = datetime.fromisoformat(floor_iso)
+        since_exclusive = cursor is not None
+        if floor_dt and (since is None or since < floor_dt):
+            since = floor_dt
+            since_exclusive = False
 
-    # Sem atividade nova além da janela pedida — pula.
-    if not last_activity or (since and last_activity <= since.isoformat()):
+    # Sem atividade nova além da janela pedida — pula (sem chamada à Graph).
+    if not last_activity or (since and last_activity <= since):
         return 0
 
     logger.info("Extraindo mensagens de: %s", chat_name)
 
     try:
-        messages = get_messages(chat_id, since, until_dt)
+        messages = get_messages(chat_id, since, until_dt, since_exclusive=since_exclusive)
     except Exception as e:
         logger.error("Erro ao extrair de %s: %s", chat_name, e)
         return None
 
-    real_latest = ""
+    real_latest = None
     if messages:
         save_messages(messages, chat_id, chat_name)
-        real_latest = max((m["created_at"] for m in messages if m["created_at"]), default="")
+        real_latest = max(
+            (ts for ts in (parse_timestamp(m["created_at"]) for m in messages) if ts),
+            default=None,
+        )
 
     # Avança o cursor sem regredir. No modo diário (sem --until), leva até a última
     # atividade vista — inclusive eventos de sistema — mesmo sem mensagem real nova.
     # No backfill (--until), só com mensagem real, para não estourar a janela.
-    new_cursor = max(real_latest, last_activity) if until_dt is None else real_latest
-    new_cursor = max(new_cursor, cursor.isoformat() if cursor else "")
+    candidates = [real_latest] if until_dt else [real_latest, last_activity]
+    candidates.append(cursor)
+    new_cursor = max((c for c in candidates if c), default=None)
     if new_cursor:
-        update_cursor(chat_id, new_cursor)
+        update_cursor(chat_id, new_cursor.isoformat())
 
     if not messages:
         return 0
@@ -119,8 +133,8 @@ def run_extraction(
     Retorna (total de mensagens, conjunto de chat_ids que ganharam mensagens) —
     o segundo é usado para regenerar só as páginas HTML tocadas.
     """
-    floor_iso = since_floor.isoformat() if since_floor else None
-    until_dt = datetime.combine(until, datetime.max.time()) if until else None
+    floor_dt = to_utc(datetime.combine(since_floor, datetime.min.time())) if since_floor else None
+    until_dt = to_utc(datetime.combine(until, datetime.max.time())) if until else None
 
     chats = list_chats()
     if config.MAX_CHATS_PER_RUN:
@@ -132,7 +146,7 @@ def run_extraction(
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(_extract_chat, chat, floor_iso, until_dt, force): chat["id"]
+            executor.submit(_extract_chat, chat, floor_dt, until_dt, force): chat["id"]
             for chat in chats
         }
         return _consume_extraction(futures, n)

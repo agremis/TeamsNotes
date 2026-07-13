@@ -22,6 +22,15 @@ logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 IMG_EXTS = ("png", "jpg", "jpeg", "gif", "webp")
+
+# Marcador de falha permanente no download de uma imagem (negative cache).
+FAILED_EXT = "failed"
+# Status que NÃO adianta retentar: o acesso ao hostedContent foi negado ou o
+# conteúdo não existe mais. Sem marcar isso, todo export noturno retenta as
+# mesmas imagens mortas para sempre (chats de reunião a que se perdeu acesso).
+# 401 fica de fora de propósito — é token expirado, transitório. Rede/429/5xx
+# também não entram: a Session já os retenta.
+_PERMANENT_STATUS = (403, 404)
 _CONTENT_TYPE_EXT = {
     "image/png": "png",
     "image/jpeg": "jpg",
@@ -86,12 +95,26 @@ def _ext_from_content_type(ctype: str) -> str:
     return _CONTENT_TYPE_EXT.get((ctype or "").split(";")[0].strip().lower(), "png")
 
 
+def _mark_failed(dest_dir: str, basename: str) -> None:
+    """Grava o marcador de falha permanente (negative cache) da imagem."""
+    os.makedirs(dest_dir, exist_ok=True)
+    open(os.path.join(dest_dir, f"{basename}.{FAILED_EXT}"), "w").close()
+
+
 def _download_image(url: str, dest_dir: str, basename: str) -> str | None:
-    """Baixa um hostedContent autenticado. Retorna o nome do arquivo ou None."""
+    """Baixa um hostedContent autenticado. Retorna o nome do arquivo ou None.
+
+    Cacheia sucesso (arquivo baixado) E falha permanente (marcador .failed), para
+    não retentar indefinidamente imagens de chats a que se perdeu acesso.
+    """
     basename = re.sub(r"[^A-Za-z0-9_-]", "", basename) or "img"
     for ext in IMG_EXTS:  # cache: já baixado antes
         if os.path.exists(os.path.join(dest_dir, f"{basename}.{ext}")):
             return f"{basename}.{ext}"
+    # Negative cache: já falhou de forma permanente antes — nem tenta.
+    if os.path.exists(os.path.join(dest_dir, f"{basename}.{FAILED_EXT}")):
+        return None
+
     try:
         token = get_access_token()
         resp = get_session().get(
@@ -99,7 +122,15 @@ def _download_image(url: str, dest_dir: str, basename: str) -> str | None:
         )
         resp.raise_for_status()
     except Exception as e:
-        logger.warning("Falha ao baixar imagem: %s", e)
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        if status in _PERMANENT_STATUS:
+            _mark_failed(dest_dir, basename)
+            logger.warning(
+                "Imagem inacessivel (HTTP %s) — marcada, nao sera retentada: %s",
+                status, url,
+            )
+        else:
+            logger.warning("Falha ao baixar imagem: %s", e)
         return None
 
     os.makedirs(dest_dir, exist_ok=True)
