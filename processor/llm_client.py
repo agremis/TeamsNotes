@@ -89,7 +89,10 @@ def _call_anthropic(system_prompt: str, user_prompt: str) -> str:
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
     response = client.messages.create(
         model=config.ANTHROPIC_MODEL,
-        max_tokens=4096,
+        # Lotes de LLM_BATCH_SIZE mensagens densas podem gerar muitos itens JSON;
+        # com 4096 a resposta arrisca cortar no meio, e um JSON truncado descarta
+        # o lote inteiro silenciosamente (ver _parse_response).
+        max_tokens=8192,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}],
     )

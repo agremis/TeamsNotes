@@ -78,7 +78,15 @@ def _parse_response(raw: str) -> list[dict]:
             return []
         return items
     except json.JSONDecodeError:
-        logger.error("Falha ao parsear JSON da LLM: %s", raw[:500])
+        if not raw.rstrip().endswith("]"):
+            logger.error(
+                "Falha ao parsear JSON da LLM — resposta parece truncada (não "
+                "termina em ']'), o lote inteiro foi perdido. Considere aumentar "
+                "max_tokens ou reduzir LLM_BATCH_SIZE. Fim da resposta: %s",
+                raw[-300:],
+            )
+        else:
+            logger.error("Falha ao parsear JSON da LLM: %s", raw[:500])
         return []
 
 
