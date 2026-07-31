@@ -1,12 +1,19 @@
 """Classificação de mensagens via LLM (provider configurável)."""
 
+import html
 import json
 import logging
+import re
 
 import config
 from processor.llm_client import classify as llm_classify
 
 logger = logging.getLogger(__name__)
+
+# Teams manda link colado como <a href="URL real">título visível</a> — o texto
+# puro (body) só tem o título, a URL fica só no HTML. Sem isto, PRs, pipelines
+# e outros links relevantes viram itens sem link nenhum.
+_HREF_RE = re.compile(r'<a\s[^>]*\bhref="([^"]+)"', re.IGNORECASE)
 
 SYSTEM_PROMPT = """Você receberá mensagens de chats corporativos do Microsoft Teams de um dia.
 
@@ -34,10 +41,25 @@ Retorne APENAS um array JSON válido. Sem texto adicional, sem markdown.
 Se não houver nada útil, retorne: []"""
 
 
+def _hidden_links(msg: dict) -> list[str]:
+    """URLs presentes só no HTML (texto visível é apenas o título do link)."""
+    raw_html = msg.get("raw_html") or ""
+    body = msg.get("body") or ""
+    links = []
+    for href in _HREF_RE.findall(raw_html):
+        href = html.unescape(href)
+        if href not in body and href not in links:
+            links.append(href)
+    return links
+
+
 def _format_messages_for_llm(messages: list[dict]) -> str:
     lines = []
     for msg in messages:
-        lines.append(f"[{msg['created_at']}] {msg['author']}: {msg['body']}")
+        text = msg["body"]
+        for href in _hidden_links(msg):
+            text = f"{text} ({href})"
+        lines.append(f"[{msg['created_at']}] {msg['author']}: {text}")
     return "\n".join(lines)
 
 
