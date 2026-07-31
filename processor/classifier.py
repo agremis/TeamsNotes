@@ -93,6 +93,9 @@ def classify(messages: list[dict]) -> list[dict]:
         return []
 
     all_items = []
+    # Um assunto que atravessa a fronteira de dois lotes é visto (e reextraído)
+    # por ambas as chamadas à LLM, que não têm memória uma da outra.
+    seen = set()
 
     for i in range(0, len(messages), config.LLM_BATCH_SIZE):
         batch = messages[i : i + config.LLM_BATCH_SIZE]
@@ -106,6 +109,10 @@ def classify(messages: list[dict]) -> list[dict]:
             if item.get("category") not in config.CATEGORIES:
                 logger.warning("Categoria inválida ignorada: %s", item.get("category"))
                 continue
+            key = (item["category"], item.get("content", "").strip().lower())
+            if key in seen:
+                continue
+            seen.add(key)
             all_items.append(item)
 
     logger.info("Total de itens classificados: %d", len(all_items))
