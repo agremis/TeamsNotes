@@ -1,5 +1,6 @@
 """Cliente para extração de mensagens do Microsoft Teams via Graph API."""
 
+import json
 import re
 import time
 from datetime import datetime, timezone
@@ -189,12 +190,32 @@ def list_chats() -> list[dict]:
     return sorted(unique.values(), key=_chat_sort_key, reverse=True)
 
 
+def _file_attachments(msg: dict) -> str:
+    """Serializa (JSON) só os anexos que referenciam um arquivo real.
+
+    O corpo HTML só traz um placeholder <attachment id="..."></attachment>; a
+    URL/nome do arquivo vive à parte, em msg['attachments']. contentType
+    'reference' com contentUrl é anexo de arquivo de verdade (ex.: imagem
+    colada que virou upload pro SharePoint/OneDrive do autor) — sem isto, o
+    placeholder nunca podia ser resolvido no export e a imagem some
+    silenciosamente. 'messageReference' (cita outra mensagem) e cards não têm
+    arquivo nenhum para preservar.
+    """
+    atts = [
+        {"id": a["id"], "name": a.get("name"), "contentUrl": a["contentUrl"]}
+        for a in (msg.get("attachments") or [])
+        if a.get("contentType") == "reference" and a.get("contentUrl")
+    ]
+    return json.dumps(atts, ensure_ascii=False) if atts else ""
+
+
 def _parse_message(msg: dict) -> dict | None:
     """Converte uma mensagem da Graph no formato interno, ou None se descartável.
 
     Descarta mensagens de sistema (messageType != 'message') e sem conteúdo.
-    Devolve 'body' (texto limpo, para a LLM) e 'raw_html' (original preservado,
-    para o arquivo HTML — imagens são localizadas depois, no export).
+    Devolve 'body' (texto limpo, para a LLM), 'raw_html' (original preservado,
+    para o arquivo HTML — imagens são localizadas depois, no export) e
+    'attachments' (anexos de arquivo referenciados pelo raw_html).
     """
     if msg.get("messageType") != "message":
         return None
@@ -220,6 +241,7 @@ def _parse_message(msg: dict) -> dict | None:
         "author": author,
         "body": content,
         "raw_html": raw_html,
+        "attachments": _file_attachments(msg),
         "created_at": msg.get("createdDateTime", ""),
     }
 

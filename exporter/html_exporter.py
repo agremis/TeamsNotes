@@ -7,6 +7,7 @@ estilo Teams com divisória por dia. Não chama a LLM — é só preservação.
 
 import hashlib
 import html
+import json
 import logging
 import os
 import re
@@ -140,6 +141,39 @@ def _download_image(url: str, dest_dir: str, basename: str) -> str | None:
     return fname
 
 
+def _resolve_attachments(raw_html: str, attachments_json: str) -> str:
+    """Troca <attachment id="X"> por um link para o arquivo, quando resolvido.
+
+    O placeholder no corpo não carrega a URL — ela vem à parte, em
+    messages.attachments (ver extractor._file_attachments). Sem isto, um
+    arquivo/imagem colado como anexo (não como <img> inline) simplesmente
+    desaparecia do HTML exportado, sem nem um link para abrir manualmente.
+    Não é possível baixar e embutir a imagem aqui: a URL é do SharePoint/
+    OneDrive do autor, um recurso diferente do Graph (exigiria escopo delegado
+    extra e novo consentimento) — o link abre autenticado no navegador de quem
+    já tem acesso ao arquivo.
+    """
+    if not attachments_json:
+        return raw_html
+    try:
+        attachments = json.loads(attachments_json)
+    except json.JSONDecodeError:
+        return raw_html
+    by_id = {a["id"]: a for a in attachments if a.get("contentUrl")}
+    if not by_id:
+        return raw_html
+
+    def repl(match: re.Match) -> str:
+        att = by_id.get(match.group(1))
+        if not att:
+            return match.group(0)
+        name = html.escape(att.get("name") or "arquivo anexado")
+        url = html.escape(att["contentUrl"])
+        return f'<a class="attachment-link" href="{url}" target="_blank" rel="noreferrer noopener">\U0001F4CE {name}</a>'
+
+    return re.sub(r'<attachment id="([^"]+)"\s*>.*?</attachment>', repl, raw_html, flags=re.S)
+
+
 def _localize_images(raw_html: str, slug: str, msg_id: str, img_dir: str) -> str:
     """Baixa as imagens inline da Graph e reescreve os <img src> para local."""
     counter = {"n": 0}
@@ -177,6 +211,7 @@ def _render_messages(rows: list[dict], slug: str, img_dir: str) -> str:
             parts.append(f'<div class="day-sep"><span class="day-label">{_fmt_day(day)}</span></div>')
 
         raw = r.get("raw_html") or html.escape(r.get("body") or "")
+        raw = _resolve_attachments(raw, r.get("attachments") or "")
         content = _localize_images(_sanitize(raw), slug, r.get("id") or "", img_dir)
         parts.append(
             f'<div class="msg {_author_class(r.get("author"))}">'
@@ -248,7 +283,7 @@ def _query_chats() -> list[dict]:
 def _query_messages(chat_id: str) -> list[dict]:
     """Histórico COMPLETO de um chat (a página é sempre regenerada inteira, o
     que faz a conversa acumular conforme o banco cresce entre execuções)."""
-    sql = """SELECT id, author, body, raw_html, created_at FROM messages
+    sql = """SELECT id, author, body, raw_html, attachments, created_at FROM messages
              WHERE chat_id = ? ORDER BY created_at"""
     with get_connection() as conn:
         return [dict(r) for r in conn.execute(sql, (chat_id,))]

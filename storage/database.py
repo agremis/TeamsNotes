@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS messages (
     author TEXT,
     body TEXT,
     raw_html TEXT,
+    attachments TEXT,
     created_at DATETIME,
     extracted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     processed INTEGER DEFAULT 0
@@ -40,7 +41,7 @@ CREATE TABLE IF NOT EXISTS classified_items (
 # Colunas adicionadas após a criação inicial do schema. Migração idempotente
 # para bancos antigos reaproveitados (banco novo já nasce com elas).
 _MIGRATIONS = {
-    "messages": [("raw_html", "TEXT")],
+    "messages": [("raw_html", "TEXT"), ("attachments", "TEXT")],
     "classified_items": [("engine", "TEXT")],
 }
 
@@ -93,15 +94,17 @@ def save_messages(messages: list[dict], chat_id: str, chat_name: str) -> None:
         for msg in messages:
             conn.execute(
                 """INSERT INTO messages
-                       (id, chat_id, chat_name, author, body, raw_html, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                       (id, chat_id, chat_name, author, body, raw_html, attachments, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        body = excluded.body,
                        raw_html = excluded.raw_html,
+                       attachments = excluded.attachments,
                        chat_name = excluded.chat_name""",
                 (
                     msg["id"], chat_id, chat_name, msg["author"],
-                    msg["body"], msg.get("raw_html", ""), msg["created_at"],
+                    msg["body"], msg.get("raw_html", ""), msg.get("attachments", ""),
+                    msg["created_at"],
                 ),
             )
 
