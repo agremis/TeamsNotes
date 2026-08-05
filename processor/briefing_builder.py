@@ -108,6 +108,11 @@ def _group_by_chat(items: list[dict]) -> dict[str, list[dict]]:
     return dict(grouped)
 
 
+def daily_path(target_date: date) -> str:
+    """Caminho do arquivo gerado por build_daily() para a data — sem gerá-lo."""
+    return os.path.join(_output_base(), "daily", f"{target_date.isoformat()}.md")
+
+
 def build_daily(target_date: date, items: list[dict]) -> str | None:
     """Gera briefing diario e salva em daily/YYYY-MM-DD.md.
 
@@ -124,8 +129,7 @@ def build_daily(target_date: date, items: list[dict]) -> str | None:
     if not md:
         return None
 
-    path = os.path.join(_output_base(), "daily", f"{date_str}.md")
-    _save(path, md)
+    _save(daily_path(target_date), md)
     return md
 
 
