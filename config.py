@@ -24,7 +24,7 @@ OBSIDIAN_VAULT_PATH = os.getenv("OBSIDIAN_VAULT_PATH")
 
 # Saída das páginas HTML de preservação das conversas (uma por chat + índice).
 CHATS_HTML_PATH = os.getenv(
-    "CHATS_HTML_PATH", r"C:\Vault\Projects\Chats do Trabalho\CHATS"
+    "CHATS_HTML_PATH", r"C:\Vault\Chats\CHATS"
 )
 
 # Microsoft Graph scopes (delegated)
