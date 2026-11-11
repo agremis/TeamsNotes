@@ -31,9 +31,8 @@ from storage.database import (
 from auth.token_manager import AuthRequired
 from extractor.teams_client import get_messages, list_chats, parse_timestamp, to_utc
 from processor.classifier import classify
-from processor.briefing_builder import build_daily, build_weekly, build_monthly, daily_path
+from processor.briefing_builder import build_daily, build_weekly, build_monthly
 from exporter.html_exporter import export as export_html
-from openbrain.sync import sync_file
 
 logging.basicConfig(
     level=logging.INFO,
@@ -226,13 +225,6 @@ def process_day(target_date: date) -> None:
         md = build_daily(target_date, db_items)
         if md:
             logger.info("Briefing diario gerado para %s", date_str)
-            # Etapa adicional, opt-in (OPEN_BRAIN_SYNC_ENABLED) e não-crítica:
-            # falha aqui não deve derrubar o pipeline principal (ver openbrain/sync.py).
-            if config.OPEN_BRAIN_SYNC_ENABLED:
-                try:
-                    sync_file(daily_path(target_date))
-                except Exception as e:
-                    logger.error("Falha inesperada no sync com Open Brain: %s", e)
 
 
 def run_pipeline(

@@ -17,14 +17,6 @@ ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
 
-# Open Brain — MCP server pessoal de memória semântica. Sincroniza cada seção
-# do briefing diário como uma "thought" (ver openbrain/sync.py). Baseado no
-# projeto OB1 (https://github.com/NateBJones-Projects/OB1) — só interessa a
-# quem já roda essa stack, então vem DESLIGADO por padrão.
-OPEN_BRAIN_SYNC_ENABLED = os.getenv("OPEN_BRAIN_SYNC_ENABLED", "false").strip().lower() in ("1", "true", "yes")
-OPEN_BRAIN_MCP_URL = os.getenv("OPEN_BRAIN_MCP_URL")
-OPEN_BRAIN_ACCESS_KEY = os.getenv("OPEN_BRAIN_ACCESS_KEY")
-
 # Paths
 DB_PATH = os.getenv("DB_PATH", "./storage/messages.db")
 BRIEFINGS_PATH = os.getenv("BRIEFINGS_PATH", "./briefings")
