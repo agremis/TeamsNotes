@@ -291,8 +291,11 @@ $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At 08:00 `
               -RepetitionInterval (New-TimeSpan -Hours 1) `
               -RepetitionDuration (New-TimeSpan -Hours 10 -Minutes 5)).Repetition
 # IgnoreNew: se um ciclo atrasar, o próximo não sobrepõe.
+# Bateria liberada: de dia o notebook costuma estar fora da tomada, e o padrão
+# do Agendador pularia o ciclo.
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RunOnlyIfNetworkAvailable `
-              -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 50)
+              -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 50) `
+              -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName "TeamsNotes Intradiario" -Action $action -Trigger $trigger -Settings $settings
 ```
 
