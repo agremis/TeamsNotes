@@ -8,6 +8,7 @@ Uso:
 
 import argparse
 import logging
+import requests
 import sys
 import os
 from collections import defaultdict
@@ -28,6 +29,7 @@ from storage.database import (
     get_items_for_date, get_items_for_date_range,
     mark_messages_processed, reset_processed, delete_items_for_range,
     get_pending_dates, get_processed_for_chat_date,
+    get_blocked_activity, block_chat, unblock_chat,
 )
 from auth.token_manager import AuthRequired
 from extractor.teams_client import get_messages, list_chats, parse_timestamp, to_utc
@@ -42,6 +44,10 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger(__name__)
+
+
+# Recusas da Graph que não mudam com retry (sem permissão / chat inexistente).
+_DETERMINISTIC_HTTP = (403, 404)
 
 
 def _extract_chat(
@@ -88,13 +94,38 @@ def _extract_chat(
     if not last_activity or (since and last_activity <= since):
         return 0
 
+    # Recusado antes (403/404) e sem atividade desde então — pula. Com atividade
+    # nova, tenta de novo: o acesso pode ter voltado.
+    blocked = get_blocked_activity(chat_id)
+    if blocked is not None:
+        blocked_at = parse_timestamp(blocked)
+        if blocked_at and last_activity <= blocked_at:
+            return 0
+
     logger.info("Extraindo mensagens de: %s", chat_name)
 
     try:
         messages = get_messages(chat_id, since, until_dt, since_exclusive=since_exclusive)
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else None
+        if status in _DETERMINISTIC_HTTP:
+            # Não é queda de rede: retentar não adianta e não deve contar para
+            # o aborto. O cursor fica onde está, para nada se perder se o
+            # acesso voltar.
+            block_chat(chat_id, status, chat["lastActivity"])
+            logger.warning(
+                "%s recusado pela Graph (%d) — ignorado ate ter atividade nova.",
+                chat_name, status,
+            )
+            return 0
+        logger.error("Erro ao extrair de %s: %s", chat_name, e)
+        return None
     except Exception as e:
         logger.error("Erro ao extrair de %s: %s", chat_name, e)
         return None
+
+    if blocked is not None:
+        unblock_chat(chat_id)
 
     real_latest = None
     if messages:

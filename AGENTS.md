@@ -58,4 +58,6 @@ Chamadas à Graph usam a `Session` compartilhada de `teams_client.get_session()`
 que já tem retry com backoff (erros de conexão + 429/5xx). Não use `requests.get`
 cru. Erros determinísticos (403/404) **não** são retentados de propósito — no
 export de imagens eles são gravados num negative cache (`.failed`) para não
-retentarem indefinidamente.
+retentarem indefinidamente. Na extração de chats, o equivalente é a tabela
+`blocked_chats`: o chat recusado não conta como falha de rede e só é tentado de
+novo quando tiver atividade mais nova que a da recusa.

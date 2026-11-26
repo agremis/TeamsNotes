@@ -36,6 +36,17 @@ CREATE TABLE IF NOT EXISTS classified_items (
     briefing_date DATE,
     engine TEXT
 );
+
+-- Negative cache de chats que a Graph recusa (403/404): sem isto, todo run
+-- tentava de novo, e cada recusa contava como falha para o aborto por queda
+-- de rede. last_activity é a atividade vista na recusa: o chat só é tentado
+-- de novo quando houver atividade mais nova.
+CREATE TABLE IF NOT EXISTS blocked_chats (
+    chat_id TEXT PRIMARY KEY,
+    status INTEGER,
+    last_activity TEXT,
+    blocked_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 # Colunas adicionadas após a criação inicial do schema. Migração idempotente
@@ -221,6 +232,33 @@ def get_cursor(chat_id: str) -> datetime | None:
         if row and row["last_read_at"]:
             return datetime.fromisoformat(row["last_read_at"])
         return None
+
+
+def get_blocked_activity(chat_id: str) -> str | None:
+    """lastActivity registrada quando a Graph recusou o chat, ou None se não está
+    bloqueado. String crua da Graph: quem compara usa parse_timestamp."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT last_activity FROM blocked_chats WHERE chat_id = ?", (chat_id,)
+        ).fetchone()
+        return row["last_activity"] if row else None
+
+
+def block_chat(chat_id: str, status: int, last_activity: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO blocked_chats (chat_id, status, last_activity) VALUES (?, ?, ?)
+               ON CONFLICT(chat_id) DO UPDATE SET
+                   status = excluded.status,
+                   last_activity = excluded.last_activity,
+                   blocked_at = CURRENT_TIMESTAMP""",
+            (chat_id, status, last_activity),
+        )
+
+
+def unblock_chat(chat_id: str) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM blocked_chats WHERE chat_id = ?", (chat_id,))
 
 
 def update_cursor(chat_id: str, last_read_at: str) -> None:
