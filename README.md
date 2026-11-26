@@ -296,7 +296,13 @@ $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At 08:00 `
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RunOnlyIfNetworkAvailable `
               -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 50) `
               -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-Register-ScheduledTask -TaskName "TeamsNotes Intradiario" -Action $action -Trigger $trigger -Settings $settings
+# S4U: roda sem janela e mesmo sem você logado, sem guardar senha. Registrar
+# exige PowerShell como administrador. Só serve porque o pipeline não usa
+# credenciais do Windows (cache MSAL em arquivo comum, Graph/LLM via HTTPS).
+$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
+              -LogonType S4U -RunLevel Limited
+Register-ScheduledTask -TaskName "TeamsNotes Intradiario" -Action $action -Trigger $trigger `
+              -Settings $settings -Principal $principal
 ```
 
 ### Linux/macOS (cron)
