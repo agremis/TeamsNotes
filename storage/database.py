@@ -125,6 +125,47 @@ def get_unprocessed(target_date: str | None = None) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def get_processed_for_chat_date(chat_id: str, target_date: str) -> list[dict]:
+    """Mensagens JÁ classificadas de um chat numa data — o contexto que acompanha
+    a classificação das que chegaram depois (run de hora em hora).
+
+    Sem ORDER BY: quem chama ordena por parse_timestamp, porque a ordem
+    lexicográfica de created_at não é a cronológica (precisão fracionária
+    variável da Graph).
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT author, body, raw_html, created_at FROM messages
+               WHERE processed = 1 AND chat_id = ? AND DATE(created_at) = ?""",
+            (chat_id, target_date),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def find_chats(name: str) -> list[dict]:
+    """Chats já extraídos cujo nome contém 'name' (sem diferenciar maiúsculas),
+    do mais recente para o mais antigo: [{chat_id, chat_name, last_at}].
+
+    Casa com qualquer nome que o chat já teve (renomear não troca o chat_id) e
+    devolve o nome mais recente. last_at serve só para ordenar chats entre si:
+    comparar created_at como string só erraria dentro do mesmo segundo.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT chat_id,
+                      (SELECT m2.chat_name FROM messages m2 WHERE m2.chat_id = m.chat_id
+                       ORDER BY m2.created_at DESC LIMIT 1) AS chat_name,
+                      MAX(created_at) AS last_at
+               FROM messages m
+               WHERE chat_id IN (SELECT DISTINCT chat_id FROM messages
+                                 WHERE chat_name LIKE '%' || ? || '%')
+               GROUP BY chat_id
+               ORDER BY last_at DESC""",
+            (name,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def get_pending_dates(limit: int | None = None, newest_first: bool = True) -> list[str]:
     """Datas (YYYY-MM-DD) que ainda têm mensagens não classificadas.
 

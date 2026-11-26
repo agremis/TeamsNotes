@@ -62,9 +62,6 @@ CATEGORY_WEIGHT = {
     "link_util": 1,
 }
 
-# Horário de execução (cron local)
-NIGHTLY_RUN_TIME = "23:00"
-
 # Dia para resumo semanal
 WEEKLY_SUMMARY_DAY = "friday"
 
@@ -93,6 +90,12 @@ EXTRACTION_WORKERS = 5
 
 # LLM: tamanho máximo de lote de mensagens por chamada
 LLM_BATCH_SIZE = 50
+
+# Contexto na classificação: quantas mensagens ANTERIORES do mesmo chat (no mesmo
+# dia) vão junto de cada lote, só para leitura. Sem isto, o run de hora em hora
+# classifica um "fechado então" das 15h sem ver a discussão das 10h. Custa
+# ~30 tokens por mensagem de contexto, só nos lotes que têm algo antes. 0 desliga.
+LLM_CONTEXT_MESSAGES = int(os.getenv("LLM_CONTEXT_MESSAGES", "20"))
 
 # Backlog órfão: datas passadas com mensagens nunca classificadas (o run diário só
 # olha para 'ontem', então tudo que o backfill trouxe para datas antigas ficou

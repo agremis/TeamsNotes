@@ -1,7 +1,8 @@
 """Entry point do pipeline — extração, classificação e briefing.
 
 Uso:
-  python scheduler/run_nightly.py                  # processa o dia anterior
+  python scheduler/run_nightly.py                  # fecha o dia anterior (+ semanal/mensal)
+  python scheduler/run_nightly.py --intraday       # de hora em hora: o que chegou hoje
   python scheduler/run_nightly.py --since 2026-06-01  # retroativo desde a data
 """
 
@@ -26,12 +27,13 @@ from storage.database import (
     update_cursor, get_cursor, save_classified_items,
     get_items_for_date, get_items_for_date_range,
     mark_messages_processed, reset_processed, delete_items_for_range,
-    get_pending_dates,
+    get_pending_dates, get_processed_for_chat_date,
 )
 from auth.token_manager import AuthRequired
 from extractor.teams_client import get_messages, list_chats, parse_timestamp, to_utc
 from processor.classifier import classify
 from processor.briefing_builder import build_daily, build_weekly, build_monthly
+from processor.llm_client import usage_summary
 from exporter.html_exporter import export as export_html
 
 logging.basicConfig(
@@ -191,6 +193,32 @@ def _consume_extraction(futures: dict, n: int) -> tuple[int, set[str]]:
     return total, touched
 
 
+def _context_for(chat_id: str, date_str: str, pending: list[dict]) -> list[dict]:
+    """Últimas mensagens já classificadas do chat no mesmo dia, anteriores à
+    primeira pendente — o que o run de hora em hora já processou antes.
+
+    Classificando o dia inteiro de uma vez (run noturno sem runs intradiários,
+    backfill, backlog, --reprocess) não há nada processado antes, e o contexto
+    sai vazio: custo idêntico ao de antes.
+    """
+    n = config.LLM_CONTEXT_MESSAGES
+    if n <= 0:
+        return []
+    first = min(
+        (ts for ts in (parse_timestamp(m["created_at"]) for m in pending) if ts),
+        default=None,
+    )
+    if first is None:
+        return []
+    earlier = [
+        (ts, m)
+        for m in get_processed_for_chat_date(chat_id, date_str)
+        if (ts := parse_timestamp(m["created_at"])) and ts < first
+    ]
+    earlier.sort(key=lambda pair: pair[0])
+    return [m for _, m in earlier[-n:]]
+
+
 def process_day(target_date: date) -> None:
     """Classifica mensagens de um dia e gera o briefing diário."""
     date_str = target_date.isoformat()
@@ -208,9 +236,9 @@ def process_day(target_date: date) -> None:
         by_chat[m["chat_id"]].append(m)
 
     all_items = []
-    for msgs in by_chat.values():
+    for chat_id, msgs in by_chat.items():
         chat_name = msgs[0].get("chat_name") or "Geral"
-        items = classify(msgs)
+        items = classify(msgs, _context_for(chat_id, date_str, msgs))
         for item in items:
             item["chat_name"] = chat_name
         all_items.extend(items)
@@ -235,13 +263,22 @@ def run_pipeline(
     force: bool = False,
     reprocess: bool = False,
     backlog: int | None = None,
+    intraday: bool = False,
 ) -> bool:
     """Executa o pipeline. Retorna False se a extração falhou por completo
     (rede/Graph) — o chamador usa isso para sair com código != 0 e permitir que
     o Agendador reexecute. Os briefings do que já está no banco são gerados de
-    qualquer forma."""
+    qualquer forma.
+
+    intraday=True é o run de hora em hora: classifica o que chegou HOJE e
+    reescreve o briefing de hoje. Não drena backlog nem gera semanal/mensal —
+    isso é do run noturno, que fecha o dia anterior.
+    """
     logger.info("=" * 60)
-    logger.info("Iniciando pipeline — %s", datetime.now().isoformat())
+    logger.info(
+        "Iniciando pipeline%s — %s", " (intradiario)" if intraday else "",
+        datetime.now().isoformat(),
+    )
     logger.info("=" * 60)
 
     create_tables()
@@ -272,7 +309,12 @@ def run_pipeline(
             logger.error("Falha na extracao: %s", e)
 
     # Classificar/gerar briefings por dia (a menos que --no-classify).
-    if not no_classify:
+    if not no_classify and intraday:
+        try:
+            process_day(date.today())
+        except Exception as e:
+            logger.error("Falha ao processar hoje: %s", e)
+    elif not no_classify:
         yesterday = date.today() - timedelta(days=1)
         start = since or yesterday
         end = min(until, yesterday) if until else yesterday
@@ -288,9 +330,18 @@ def run_pipeline(
 
         _process_backlog(backlog if backlog is not None else config.BACKLOG_DAYS_PER_RUN, feitas)
 
-        today = date.today()
-        _maybe_build_weekly(today)
-        _maybe_build_monthly(today)
+        # O dia que este run fecha é ONTEM: às 00:10, os itens de hoje ainda nem
+        # existem. Usar 'hoje' aqui deixava a sexta fora do semanal e o último
+        # dia do mês fora do mensal.
+        _maybe_build_weekly(yesterday)
+        _maybe_build_monthly(yesterday)
+
+    usage = usage_summary()
+    if usage["calls"]:
+        logger.info(
+            "LLM: %d chamadas, %d tokens de entrada, %d de saida.",
+            usage["calls"], usage["input_tokens"], usage["output_tokens"],
+        )
 
     # Preservação HTML: regenera as páginas dos chats tocados (histórico completo).
     if not no_export and touched:
@@ -348,29 +399,34 @@ def _process_backlog(limit: int, ja_feitas: set[str]) -> None:
         logger.info("Backlog: %d datas ainda pendentes.", restantes)
 
 
-def _maybe_build_weekly(today: date) -> None:
-    """Gera o briefing semanal se hoje for o dia configurado."""
-    if today.strftime("%A").lower() != config.WEEKLY_SUMMARY_DAY:
+_WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+
+def _maybe_build_weekly(closed_day: date) -> None:
+    """Gera o briefing semanal se o dia fechado for o dia configurado (a semana
+    termina nele). Compara por weekday(), não por strftime('%A'), que depende
+    do locale."""
+    if closed_day.weekday() != _WEEKDAYS.index(config.WEEKLY_SUMMARY_DAY):
         return
     try:
-        week_start = today - timedelta(days=6)
-        week_items = get_items_for_date_range(week_start.isoformat(), today.isoformat())
+        week_start = closed_day - timedelta(days=6)
+        week_items = get_items_for_date_range(week_start.isoformat(), closed_day.isoformat())
         if week_items:
-            build_weekly(week_start, today, week_items)
+            build_weekly(week_start, closed_day, week_items)
             logger.info("Briefing semanal gerado")
     except Exception as e:
         logger.error("Falha no briefing semanal: %s", e)
 
 
-def _maybe_build_monthly(today: date) -> None:
-    """Gera o briefing mensal se hoje for o último dia do mês."""
-    if (today + timedelta(days=1)).month == today.month:
+def _maybe_build_monthly(closed_day: date) -> None:
+    """Gera o briefing mensal se o dia fechado for o último dia do mês."""
+    if (closed_day + timedelta(days=1)).month == closed_day.month:
         return
     try:
-        month_start = date(today.year, today.month, 1)
-        month_items = get_items_for_date_range(month_start.isoformat(), today.isoformat())
+        month_start = date(closed_day.year, closed_day.month, 1)
+        month_items = get_items_for_date_range(month_start.isoformat(), closed_day.isoformat())
         if month_items:
-            build_monthly(today.year, today.month, month_items)
+            build_monthly(closed_day.year, closed_day.month, month_items)
             logger.info("Briefing mensal gerado")
     except Exception as e:
         logger.error("Falha no briefing mensal: %s", e)
@@ -419,10 +475,20 @@ def main():
              "briefings/itens do intervalo e remarca as mensagens (não re-extrai). "
              "Exige --since.",
     )
+    parser.add_argument(
+        "--intraday",
+        action="store_true",
+        help="Run de hora em hora: extrai e classifica o que chegou HOJE e reescreve "
+             "o briefing de hoje. Sem backlog nem semanal/mensal (ficam com o run noturno).",
+    )
     args = parser.parse_args()
 
     if args.reprocess and not args.since:
         parser.error("--reprocess exige --since (intervalo a reprocessar).")
+    if args.intraday and (
+        args.since or args.until or args.reprocess or args.force or args.backlog
+    ):
+        parser.error("--intraday nao combina com --since/--until/--reprocess/--force/--backlog.")
 
     since = None
     if args.since:
@@ -437,7 +503,7 @@ def main():
     ok = run_pipeline(
         since=since, until=until, no_export=args.no_export,
         no_classify=args.no_classify, force=args.force, reprocess=args.reprocess,
-        backlog=args.backlog,
+        backlog=args.backlog, intraday=args.intraday,
     )
     # Exit code != 0 sinaliza a falha ao Agendador de Tarefas (que pode ser
     # configurado para reiniciar em caso de falha), em vez de mascará-la.

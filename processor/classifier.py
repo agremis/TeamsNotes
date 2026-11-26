@@ -37,8 +37,16 @@ Sua tarefa é:
      "timestamp": "ISO 8601"
    }
 
+Às vezes a entrada começa com um bloco CONTEXTO: mensagens anteriores da mesma
+conversa, já processadas antes. Use-o só para entender as NOVAS MENSAGENS (a que
+discussão um "fechado", "pode seguir" ou "resolvido" se refere). Extraia itens
+APENAS das NOVAS MENSAGENS — nada que esteja só no CONTEXTO.
+
 Retorne APENAS um array JSON válido. Sem texto adicional, sem markdown.
 Se não houver nada útil, retorne: []"""
+
+_CONTEXT_HEADER = "=== CONTEXTO (já processado — não extrair itens daqui) ==="
+_NEW_HEADER = "=== NOVAS MENSAGENS (classificar) ==="
 
 
 def _hidden_links(msg: dict) -> list[str]:
@@ -61,6 +69,22 @@ def _format_messages_for_llm(messages: list[dict]) -> str:
             text = f"{text} ({href})"
         lines.append(f"[{msg['created_at']}] {msg['author']}: {text}")
     return "\n".join(lines)
+
+
+def _build_prompt(context: list[dict], batch: list[dict]) -> str:
+    """Lote a classificar, precedido (se houver) das mensagens de contexto.
+
+    Sem contexto o prompt fica idêntico ao de antes — classificar um dia
+    inteiro de uma vez não paga nada a mais."""
+    if not context:
+        return _format_messages_for_llm(batch)
+    return "\n".join([
+        _CONTEXT_HEADER,
+        _format_messages_for_llm(context),
+        "",
+        _NEW_HEADER,
+        _format_messages_for_llm(batch),
+    ])
 
 
 def _parse_response(raw: str) -> list[dict]:
@@ -90,12 +114,16 @@ def _parse_response(raw: str) -> list[dict]:
         return []
 
 
-def classify(messages: list[dict]) -> list[dict]:
-    """Classifica uma lista de mensagens via LLM.
+def classify(messages: list[dict], context: list[dict] | None = None) -> list[dict]:
+    """Classifica uma lista de mensagens (de um mesmo chat) via LLM.
 
-    Recebe lista de dicts com keys: author, body, created_at.
+    Recebe lista de dicts com keys: author, body, created_at, em ordem
+    cronológica. 'context' são mensagens anteriores da mesma conversa, já
+    classificadas, que vão junto só para leitura.
     Retorna lista de dicts classificados com: category, content, author, timestamp.
-    Processa em lotes conforme LLM_BATCH_SIZE.
+    Processa em lotes conforme LLM_BATCH_SIZE; cada lote leva como contexto as
+    LLM_CONTEXT_MESSAGES mensagens que o precedem (do 'context' ou do lote
+    anterior), para que um assunto cortado na fronteira não perca o começo.
     """
     if not messages:
         return []
@@ -104,12 +132,19 @@ def classify(messages: list[dict]) -> list[dict]:
     # Um assunto que atravessa a fronteira de dois lotes é visto (e reextraído)
     # por ambas as chamadas à LLM, que não têm memória uma da outra.
     seen = set()
+    history = list(context or [])
+    n_ctx = max(0, config.LLM_CONTEXT_MESSAGES)
 
     for i in range(0, len(messages), config.LLM_BATCH_SIZE):
         batch = messages[i : i + config.LLM_BATCH_SIZE]
-        batch_text = _format_messages_for_llm(batch)
+        ctx = history[-n_ctx:] if n_ctx else []
+        batch_text = _build_prompt(ctx, batch)
+        history.extend(batch)
 
-        logger.info("Classificando lote de %d mensagens...", len(batch))
+        logger.info(
+            "Classificando lote de %d mensagens%s...",
+            len(batch), f" (+{len(ctx)} de contexto)" if ctx else "",
+        )
         raw = llm_classify(SYSTEM_PROMPT, batch_text)
         items = _parse_response(raw)
 

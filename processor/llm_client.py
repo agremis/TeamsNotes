@@ -12,6 +12,22 @@ logger = logging.getLogger(__name__)
 _VALID_PROVIDERS = ("anthropic", "gemini")
 _last_call = [0.0]  # timestamp da última chamada (para espaçamento)
 
+# Consumo acumulado no processo (um run do pipeline), reportado no fim do run.
+# Classificar custa dinheiro; sem isto o custo do run de hora em hora só podia
+# ser estimado pelo tamanho do texto.
+_usage = {"calls": 0, "input_tokens": 0, "output_tokens": 0}
+
+
+def _record_usage(input_tokens: int | None, output_tokens: int | None) -> None:
+    _usage["calls"] += 1
+    _usage["input_tokens"] += input_tokens or 0
+    _usage["output_tokens"] += output_tokens or 0
+
+
+def usage_summary() -> dict:
+    """Chamadas e tokens (entrada/saída) gastos até aqui neste processo."""
+    return dict(_usage)
+
 
 def _check_provider() -> str:
     provider = config.LLM_PROVIDER
@@ -96,6 +112,7 @@ def _call_anthropic(system_prompt: str, user_prompt: str) -> str:
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}],
     )
+    _record_usage(response.usage.input_tokens, response.usage.output_tokens)
     return response.content[0].text.strip()
 
 
@@ -108,4 +125,9 @@ def _call_gemini(system_prompt: str, user_prompt: str) -> str:
         system_instruction=system_prompt,
     )
     response = model.generate_content(user_prompt)
+    meta = getattr(response, "usage_metadata", None)
+    _record_usage(
+        getattr(meta, "prompt_token_count", None),
+        getattr(meta, "candidates_token_count", None),
+    )
     return response.text.strip()

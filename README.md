@@ -4,7 +4,10 @@ Ferramenta de linha de comando que extrai suas conversas do **Microsoft Teams**,
 gera **briefings** (resumos diários/semanais/mensais) com uma LLM e mantém um
 **arquivo HTML navegável** das conversas originais.
 
-- Descoberta dinâmica dos seus chats via Microsoft Graph (sem lista fixa).
+- Descoberta dinâmica dos seus chats via Microsoft Graph (sem lista fixa),
+  incluindo os chats de reunião.
+- Briefing do dia atualizado de hora em hora no expediente (opcional); o run
+  noturno fecha o dia e gera semanal/mensal.
 - Armazenamento local em SQLite (texto limpo + HTML original das mensagens).
 - Classificação/resumo via LLM — **Anthropic** ou **Google Gemini** (configurável).
 - Arquivo HTML por chat no estilo Teams: imagens inline, snippets de código,
@@ -63,6 +66,7 @@ copy .env.example .env      # Windows
 | `CHATS_HTML_PATH` | sim | pasta de saída do arquivo HTML das conversas |
 | `DB_PATH` | não | caminho do SQLite (default `./storage/messages.db`) |
 | `LLM_MIN_INTERVAL` | não | espaçamento (s) entre chamadas LLM; útil em planos gratuitos |
+| `LLM_CONTEXT_MESSAGES` | não | mensagens anteriores do chat enviadas como contexto na classificação (default `20`; `0` desliga) |
 
 ### Registro no Azure AD
 
@@ -109,6 +113,47 @@ python scheduler/run_nightly.py
 ```
 
 Extrai as conversas novas, gera o briefing de ontem e atualiza o arquivo HTML.
+É o run que **fecha o dia**: classifica o que sobrou de ontem (o que chegou
+depois do último ciclo de hora em hora), e gera o semanal quando ontem foi o dia
+configurado (sexta) e o mensal quando ontem foi o último dia do mês.
+
+### 2b. Ciclo de hora em hora (o dia corrente)
+
+```bash
+python scheduler/run_nightly.py --intraday
+```
+
+Extrai, classifica **só o que chegou hoje** e reescreve `daily/<hoje>.md` — para
+o briefing do dia já estar disponível durante o expediente. Não drena backlog
+nem gera semanal/mensal.
+
+Cada lote enviado à LLM leva junto as últimas `LLM_CONTEXT_MESSAGES` mensagens
+já classificadas daquele chat no dia, marcadas como contexto (só leitura): sem
+isso, um "fechado então" das 15h seria classificado sem a discussão das 10h.
+Classificando o dia inteiro de uma vez não há contexto a mandar, então o custo
+do run noturno sozinho não muda.
+
+> O `.md` do dia é **sobrescrito** a cada ciclo. Anotações manuais feitas nele se
+> perdem na hora seguinte — anote em outro arquivo.
+
+Ao fim de cada run o log mostra o consumo real da LLM
+(`LLM: N chamadas, X tokens de entrada, Y de saida.`).
+
+### 2c. Contexto de um chat, sob demanda
+
+Para usar o que foi escrito num chat como contexto **agora** — ex.: o chat da
+daily ao resumir a gravação da reunião —, sem esperar o próximo ciclo e sem
+chamar a LLM:
+
+```bash
+python scheduler/chat_context.py "[AOP Core] Daily"              # hoje
+python scheduler/chat_context.py "[AOP Core] Daily" --hours 2    # últimas 2h
+python scheduler/chat_context.py "AOP Core" "Delivery Team" --out contexto.md
+```
+
+O nome pode ser um trecho (sem diferenciar maiúsculas). Se casar com vários
+chats, usa o de atividade mais recente e lista os outros (`--all` inclui todos).
+Lê direto da Graph e imprime Markdown; não grava no banco nem mexe em cursor.
 
 ### 3. Backfill histórico (intervalo de datas)
 
@@ -127,6 +172,7 @@ python scheduler/run_nightly.py --since 2025-12-01 --until 2026-06-27
 | `--no-export` | não regenera o HTML ao final |
 | `--reprocess` | reclassifica um período **já processado** com a engine atual: limpa os briefings/itens do intervalo e remarca as mensagens (não re-extrai). Exige `--since` |
 | `--backlog N` | classifica **N datas órfãs** (passadas, com mensagens que nunca foram classificadas), da mais recente para a mais antiga. **Gasta cota de LLM** |
+| `--intraday` | ciclo de hora em hora: classifica só o que chegou **hoje** e reescreve o briefing de hoje (não combina com `--since`/`--until`/`--reprocess`/`--force`/`--backlog`) |
 
 ### Backlog órfão
 
@@ -206,8 +252,9 @@ então as conversas vão **acumulando** entre execuções, sem páginas duplicad
 
 ## Agendamento
 
-Sem flags, `run_nightly.py` processa **o dia anterior inteiro** — basta rodá-lo
-logo após a meia-noite.
+Sem flags, `run_nightly.py` fecha **o dia anterior** — basta rodá-lo logo após a
+meia-noite. Opcionalmente, o ciclo `--intraday` roda de hora em hora durante o
+expediente (ver abaixo).
 
 ### Windows (Agendador de Tarefas)
 
@@ -226,10 +273,28 @@ $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -WakeToRun -RunOnly
 Register-ScheduledTask -TaskName "TeamsNotes Diario" -Action $action -Trigger $trigger -Settings $settings
 ```
 
-> **Primeira autenticação**: rode `python scheduler/run_nightly.py` manualmente uma vez
-> para autorizar (device code). O token fica em cache e é renovado sozinho — depois disso
-> a tarefa roda sem interação. A máquina precisa estar ligada/acordada (ou use
-> `-StartWhenAvailable`/`-WakeToRun`, como acima).
+> **Primeira autenticação**: rode `python -m auth.login` uma vez para autorizar
+> (device code). O token fica em cache e é renovado sozinho — depois disso a tarefa
+> roda sem interação, até a política do tenant exigir MFA de novo. A máquina precisa
+> estar ligada/acordada (ou use `-StartWhenAvailable`/`-WakeToRun`, como acima).
+
+O ciclo de hora em hora é uma segunda tarefa, com `run_intraday.bat` (grava
+`logs/intraday.log`): dias úteis, das 08:00 às 18:00. O Agendador só aceita
+repetição em gatilho `-Once`, então a repetição é copiada para o gatilho semanal:
+
+```powershell
+$proj     = "C:\Sandbox\Pessoal\TeamsNotes"
+$action   = New-ScheduledTaskAction -Execute "$proj\run_intraday.bat"
+$trigger  = New-ScheduledTaskTrigger -Weekly -At 08:00 `
+              -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday
+$trigger.Repetition = (New-ScheduledTaskTrigger -Once -At 08:00 `
+              -RepetitionInterval (New-TimeSpan -Hours 1) `
+              -RepetitionDuration (New-TimeSpan -Hours 10 -Minutes 5)).Repetition
+# IgnoreNew: se um ciclo atrasar, o próximo não sobrepõe.
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RunOnlyIfNetworkAvailable `
+              -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 50)
+Register-ScheduledTask -TaskName "TeamsNotes Intradiario" -Action $action -Trigger $trigger -Settings $settings
+```
 
 ### Linux/macOS (cron)
 
